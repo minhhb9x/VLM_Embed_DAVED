@@ -75,7 +75,7 @@ D_SIGREG=$(bool_to_int "$USE_SIGREG_LOSS")
 
 # EXP_NAME="cosine_jepa_d${D_DISTILL}_cse${D_CSE}_vis${D_VISION}_sig${D_SIGREG}_kd${KD_WEIGHT}_sw${SIGREG_WEIGHT}_l${NUM_LAYER}_dt${D_TAU}"
 # EXP_NAME="struct_sigreg_JL_gmm_d${D_DISTILL}_sig${D_SIGREG}_kd${KD_WEIGHT}_sw${SIGREG_WEIGHT}_numt${NUM_T}_tmax${T_MAX}_l${NUM_LAYER}"
-EXP_NAME="struct_sigreg_SW_gmm_64com_d${D_DISTILL}_sig${D_SIGREG}_kd${KD_WEIGHT}_sw${SIGREG_WEIGHT}_numt${NUM_T}_tmax${T_MAX}_l${NUM_LAYER}"
+EXP_NAME="struct_sigreg_SW_gmm_d${D_DISTILL}_sig${D_SIGREG}_kd${KD_WEIGHT}_sw${SIGREG_WEIGHT}_numt${NUM_T}_tmax${T_MAX}_l${NUM_LAYER}"
 
 OUTPUT_DIR="training/FastVLM-0.5B_cls_${EXP_NAME}"
 CACHE_DIR="caching/B3_Qwen2_2B_cls"
@@ -124,12 +124,12 @@ torchrun  \
     --lr_scheduler_type "constant" \
     --warmup_ratio 0.05 \
     --caching_dir "$CACHE_DIR" \
-    --kd_loss_type "talas_jepa" \
+    --kd_loss_type "daved" \
     --image_resolution "low" \
     --projector_config_path "./config/projector_config_emo.json" \
     --projector_lr 5e-5 \
     --report_to None \
-    --gmm_ckpt "gmm_training/B3_Qwen2_2B_64com_cls/gmm.joblib" \
+    --gmm_ckpt "gmm_training/B3_Qwen2_2B_cls/gmm.joblib" \
     --use_distill_loss "$DISTILL_LOSS_BOOL" \
     --use_sigreg_loss "$SIGREG_BOOL" \
     --kd_weight "$KD_WEIGHT" \

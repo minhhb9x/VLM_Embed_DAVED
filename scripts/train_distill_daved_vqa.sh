@@ -24,7 +24,7 @@ T_MAX=${6:-5}
 
 NUM_LAYER=${7:-24}
 
-PORT=${8:-29521}
+PORT=${8:-29511}
 
 # ============================================================
 # Convert True/False -> 1/0 cho tên folder
@@ -77,8 +77,8 @@ D_SIGREG=$(bool_to_int "$USE_SIGREG_LOSS")
 # EXP_NAME="struct_sigreg_JL_gmm_d${D_DISTILL}_sig${D_SIGREG}_kd${KD_WEIGHT}_sw${SIGREG_WEIGHT}_numt${NUM_T}_tmax${T_MAX}_l${NUM_LAYER}"
 EXP_NAME="struct_sigreg_SW_gmm_d${D_DISTILL}_sig${D_SIGREG}_kd${KD_WEIGHT}_sw${SIGREG_WEIGHT}_numt${NUM_T}_tmax${T_MAX}_l${NUM_LAYER}"
 
-OUTPUT_DIR="training/FastVLM-0.5B_grounding_${EXP_NAME}"
-CACHE_DIR="caching/B3_Qwen2_2B_grounding"
+OUTPUT_DIR="training/FastVLM-0.5B_vqa_${EXP_NAME}"
+CACHE_DIR="caching/B3_Qwen2_2B_vqa"
 
 echo "============================================================"
 echo "Experiment:"
@@ -105,7 +105,7 @@ torchrun  \
     --model_backbone "llava_qwen2" \
     --pooling "eos" \
     --dataset_name "TIGER-Lab/MMEB-train" \
-    --subset_name "MSCOCO" \
+    --subset_name "OK-VQA" "A-OKVQA" "DocVQA" "InfographicsVQA" "ChartQA" "Visual7W" \
     --dataset_split "original" \
     --image_dir "vlm2vec_train/MMEB-train" \
     --percent_data 1.0 \
@@ -124,12 +124,12 @@ torchrun  \
     --lr_scheduler_type "constant" \
     --warmup_ratio 0.05 \
     --caching_dir "$CACHE_DIR" \
-    --kd_loss_type "talas_jepa" \
+    --kd_loss_type "daved" \
     --image_resolution "low" \
     --projector_config_path "./config/projector_config_emo.json" \
     --projector_lr 5e-5 \
     --report_to None \
-    --gmm_ckpt "gmm_training/B3_Qwen2_2B_grounding/gmm.joblib" \
+    --gmm_ckpt "gmm_training/B3_Qwen2_2B_vqa/gmm.joblib" \
     --use_distill_loss "$DISTILL_LOSS_BOOL" \
     --use_sigreg_loss "$SIGREG_BOOL" \
     --kd_weight "$KD_WEIGHT" \
@@ -160,10 +160,11 @@ echo "============================================================"
 
 
 SUBSETS=(
-  "MSCOCO" "RefCOCO" "RefCOCO-Matching" "Visual7W-Pointing"
+  "OK-VQA" "A-OKVQA" "DocVQA" "InfographicsVQA" "ChartQA" "Visual7W"
+  "ScienceQA" "VizWiz" "GQA" "TextVQA"
 )
 
-EVAL_OUTPUT="./MMEB-eval_outputs/FastVLM-0.5B_grounding_${EXP_NAME}/"
+EVAL_OUTPUT="./MMEB-eval_outputs/FastVLM-0.5B_vqa_${EXP_NAME}/"
 
 python eval_mmeb.py \
     --model_name "$MODEL" \

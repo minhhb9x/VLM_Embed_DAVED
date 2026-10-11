@@ -1,5 +1,0 @@
-chạy thêm: gmm centroid 16, 64
-sigreg gốc + struct,
-tune thấp struct loss (batch 12)
-
-đẩy layer dưới

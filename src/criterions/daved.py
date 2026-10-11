@@ -10,9 +10,9 @@ from torch.distributed.nn.functional import all_reduce as grad_all_reduce
 from scipy.optimize import linear_sum_assignment
 import joblib
 
-class TalasJepa(nn.Module):
+class DAVED(nn.Module):
     def __init__(self, args):
-        super(TalasJepa, self).__init__()
+        super(DAVED, self).__init__()
         self.args = args
         if dist.is_initialized():
             self.world_size = dist.get_world_size()
@@ -45,15 +45,6 @@ class TalasJepa(nn.Module):
             persistent=False,
         )
 
-        Dt = gmm_model.means_.shape[1]
-        g_fixed = torch.Generator(device="cpu").manual_seed(42)
-        self.register_buffer(
-            "gmm_G",
-            torch.randn(Dt, args.Ds, 
-                generator=g_fixed, 
-                dtype=torch.float32) / math.sqrt(Dt),
-        )
-
     def _dist_gather_tensor(self, t: torch.Tensor):
         t = t.contiguous()
         all_tensors = [torch.empty_like(t) for _ in range(self.world_size)]
@@ -62,10 +53,6 @@ class TalasJepa(nn.Module):
         all_tensors = torch.cat(all_tensors, dim=0)
         return all_tensors
 
-    def cosine_loss(self, student_embeddings, teacher_embeddings):
-        cos_sim = F.cosine_similarity(student_embeddings, teacher_embeddings, dim=-1)
-        cos_sim_loss = 1 - cos_sim
-        return cos_sim_loss.mean()
 
     def structure_loss(self, student_embeddings, teacher_embeddings):
         student_embeddings = F.normalize(student_embeddings, p=2, dim=-1)
@@ -78,38 +65,6 @@ class TalasJepa(nn.Module):
 
         return loss
 
-    def distillcse_kd_loss(self, S1, S2, T1, T2, tau=0.02):
-        """
-        Distill teacher similarity distribution over in-batch negatives.
-
-        Student and teacher dimensions do not need to match because
-        distillation is applied to pairwise similarity matrices.
-        """
-        S1 = F.normalize(S1.float(), p=2, dim=-1)
-
-        S2 = F.normalize(S2.float(), p=2, dim=-1)
-
-        T1 = F.normalize(T1.float(), p=2, dim=-1)
-
-        T2 = F.normalize(T2.float(), p=2, dim=-1,)
-
-        s_logits = (S1 @ S2.transpose(0, 1)) / tau
-
-        t_logits = (T1 @ T2.transpose(0, 1)) / tau
-
-        # Positive query-passage pairs are on the diagonal.
-        # DistillCSE KD here focuses on the negative distribution.
-        mask = torch.eye(s_logits.size(0), device=s_logits.device, dtype=torch.bool,)
-
-        s_logits = s_logits.masked_fill(mask, torch.finfo(s_logits.dtype).min,)
-
-        t_logits = t_logits.masked_fill( mask,torch.finfo(t_logits.dtype).min,)
-
-        teacher_probs = F.softmax(t_logits,dim=1,).detach()
-
-        student_log_probs = F.log_softmax(s_logits,dim=1,)
-
-        return F.kl_div(student_log_probs, teacher_probs, reduction="batchmean",)
     
     def sigreg(self, x: torch.Tensor, num_slices: int = 256) -> torch.Tensor:
         device = x.device
@@ -251,83 +206,6 @@ class TalasJepa(nn.Module):
 
             return count * (student_sorted - teacher_sorted).square().mean()
 
-    def kd_sigreg_old(
-        self,
-        student_x: torch.Tensor,
-        num_slices: int = 256,
-        num_t: int = 17,
-        t_max: float = 5.0,
-        normalize_b: bool = True,
-    ) -> torch.Tensor:
-        """SIGReg với đích là MoG của teacher.
-
-        Hướng a (không gian student, Ds) -> b = G a (không gian teacher, Dt),
-        với G cố định [Dt, Ds] (rút offline, lưu cùng checkpoint).
-        """
-        if student_x.ndim != 2 or student_x.size(0) == 0:
-            raise ValueError("student_x phải có shape [N, D] và N > 0")
-        if num_slices < 1 or num_t < 2 or t_max <= 0:
-            raise ValueError("num_slices >= 1; num_t >= 2; t_max > 0")
-
-        device = student_x.device
-        distributed = self.world_size > 1
-
-        seed = random.randint(0, 2**63 - 1) if self.process_rank == 0 else 0
-        if distributed:
-            seed_tensor = torch.tensor(seed, device=device, dtype=torch.int64)
-            dist.broadcast(seed_tensor, src=0)
-            seed = int(seed_tensor.item())
-
-        generator = torch.Generator(device=device)
-        generator.manual_seed(seed)
-
-        with torch.autocast(device_type=device.type, enabled=False):
-            means = self.gmm_means.to(device=device, dtype=torch.float32)          # [K, Dt]
-            variances = self.gmm_variances.to(device=device, dtype=torch.float32)  # [K, Dt]
-            weights = self.gmm_weights.to(device=device, dtype=torch.float32)      # [K]
-            G = self.gmm_G.to(device=device, dtype=torch.float32)                  # [Dt, Ds]
-
-            x = student_x.float()
-            if G.size(1) != x.size(1):
-                raise ValueError(f"G có Ds={G.size(1)} nhưng student_x có D={x.size(1)}")
-
-            # Hướng đơn vị trong không gian student
-            A = F.normalize(
-                torch.randn(x.size(1), num_slices, generator=generator, device=device), dim=0
-            )  # [Ds, M]
-
-            t = torch.linspace(-t_max, t_max, num_t, device=device)
-            win = torch.exp(-0.5 * t.square())
-
-            # ---- Student: ECF của a^T h ----
-            phase_s = (x @ A).unsqueeze(-1) * t                                    # [N, M, T]
-            s = torch.stack([phase_s.cos().sum(0), phase_s.sin().sum(0)], dim=-1)  # [M, T, 2]
-
-            count = torch.tensor(float(x.size(0)), device=device)
-            if distributed:
-                s = grad_all_reduce(s, op=dist.ReduceOp.SUM)
-                dist.all_reduce(count, op=dist.ReduceOp.SUM)
-            student_ecf = s / count                                                # [M, T, 2]
-
-            # ---- Teacher: CF closed-form của MoG chiếu theo b = G a ----
-            with torch.no_grad():
-                b = G @ A                                                          # [Dt, M]
-                if normalize_b:
-                    b = F.normalize(b, dim=0)   # K=1 -> đúng SIGReg gốc
-                pm = means @ b                                                     # [K, M]
-                pv = variances @ b.square()                                        # [K, M]
-                decay = weights[:, None, None] * torch.exp(
-                    -0.5 * pv.unsqueeze(-1) * t.square()
-                )                                                                  # [K, M, T]
-                phase_t = pm.unsqueeze(-1) * t
-                teacher_cf = torch.stack(
-                    [(decay * phase_t.cos()).sum(0), (decay * phase_t.sin()).sum(0)],
-                    dim=-1,
-                )                                                                  # [M, T, 2]
-
-            # ---- Loss: N * trapz(|ECF - CF|^2 * exp(-t^2/2)), trung bình trên slice ----
-            err = (student_ecf - teacher_cf).square().sum(-1) * win                # [M, T]
-            return torch.trapz(err, t, dim=-1).mean() * count
 
     def mi_loss(
             self,
@@ -349,160 +227,6 @@ class TalasJepa(nn.Module):
             labels = torch.arange(logits.size(0), device=logits.device)
     
             return F.cross_entropy(logits, labels)
-
-    def sigreg_sinkhorn(
-        self,
-        z_list: list[torch.Tensor],
-        concept_queries: torch.Tensor,
-        num_slices: int = 256,
-        tau: float = 0.05,
-        n_iters: int = 3,
-    ) -> torch.Tensor:
-        B = len(z_list)
-        if B == 0:
-            raise ValueError("z_list không được rỗng")
-        if tau <= 0 or n_iters < 1:
-            raise ValueError("Cần tau > 0 và n_iters >= 1")
-
-        K, D = concept_queries.shape
-        device = z_list[0].device
-        if self.centroids.device != device:
-            self.centroids.data = self.centroids.data.to(device)
-        lengths = torch.tensor([z.size(0) for z in z_list], device=device)
-
-        if K == 0 or (lengths == 0).any():
-            raise ValueError("Cần ít nhất một concept và một image token mỗi ảnh")
-        if any(z.ndim != 2 or z.size(1) != D for z in z_list):
-            raise ValueError("Mỗi phần tử z_list phải có shape [N_i, D]")
-
-        distributed = dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
-
-        with torch.autocast(device_type=device.type, enabled=False):
-            z_padded = pad_sequence(z_list, batch_first=True, padding_value=0).float()
-            N_max = z_padded.size(1)
-            valid = torch.arange(N_max, device=device)[None, :] < lengths[:, None]
-
-            # Normalize chỉ để tính cosine cost, không thay token dùng để tạo centroid.
-            q = F.normalize(concept_queries.float(), dim=-1)
-            z_for_cost = F.normalize(z_padded, dim=-1)
-            cost = 1 - torch.einsum("kd,bnd->bkn", q, z_for_cost)
-
-            neg_large = -1e9
-            log_kernel = (-cost / tau).masked_fill(~valid[:, None, :], neg_large)
-            log_u = torch.zeros(B, K, device=device)
-            log_v = torch.zeros(B, N_max, device=device).masked_fill(~valid, neg_large)
-            log_token_mass = -lengths.float().log()
-
-            # Giữ gradient qua Sinkhorn để concept_queries có thể học.
-            for _ in range(n_iters):
-                log_u = -math.log(K) - torch.logsumexp(
-                    log_kernel + log_v[:, None, :], dim=2
-                )
-                next_log_v = log_token_mass[:, None] - torch.logsumexp(
-                    log_kernel + log_u[:, :, None], dim=1
-                )
-                log_v = next_log_v.masked_fill(~valid, neg_large)
-
-            log_plan = log_kernel + log_u[:, :, None] + log_v[:, None, :]
-            plan = log_plan.masked_fill(~valid[:, None, :], neg_large).exp()
-            weights = plan / plan.sum(dim=2, keepdim=True).clamp_min(1e-12)
-            z_centroids = torch.bmm(weights, z_padded)  # [B, K, D]
-
-            # Không L2-normalize centroid, không thêm noise.
-            x = z_centroids.reshape(B * K, D)         # [B*K, D]
-
-            # Cùng hướng chiếu trên các GPU nếu dùng DDP.
-            seed = random.randint(0, 2**63 - 1) if not distributed or dist.get_rank() == 0 else 0
-            if distributed:
-                seed_tensor = torch.tensor(seed, device=device, dtype=torch.int64)
-                dist.broadcast(seed_tensor, src=0)
-                seed = int(seed_tensor.item())
-
-            generator = torch.Generator(device=device)
-            generator.manual_seed(seed)
-            A = torch.randn(D, num_slices, generator=generator, device=device, dtype=torch.float32)
-            A = A / A.norm(dim=0, keepdim=True).clamp_min(1e-12)
-
-            t = torch.linspace(-5, 5, 17, device=device, dtype=torch.float32)
-            target_cf = torch.exp(-0.5 * t.square())
-
-            phase = (x @ A).unsqueeze(-1) * t         # [B*K, M, 17]
-            ecf_sum = torch.stack(
-                [phase.cos().sum(dim=0), phase.sin().sum(dim=0)],
-                dim=-1,
-            )                                         # [M, 17, 2]
-
-            image_count = torch.tensor(B, device=device, dtype=torch.float32)
-            if distributed:
-                ecf_sum = grad_all_reduce(ecf_sum, op=dist.ReduceOp.SUM)
-                dist.all_reduce(image_count, op=dist.ReduceOp.SUM)
-
-            ecf = ecf_sum / (image_count * K)
-            err = (
-                (ecf[..., 0] - target_cf).square() + ecf[..., 1].square()
-            ) * target_cf
-
-            return torch.trapezoid(err, t, dim=1).mean() * image_count
-    
-    def get_image_hidden_states(self, student_tokenizer, 
-                                student_qry_input,
-                                student_pos_input,
-                                student_qry_output, 
-                                student_pos_output):
-        student_qry_reps, student_qry_image_features, student_qry_attention, student_qry_hidden_states = student_qry_output
-        student_pos_reps, student_pos_image_features, student_pos_attention, student_pos_hidden_states = student_pos_output
-
-        student_special_ids = torch.tensor(
-            list(set(list(student_tokenizer.added_tokens_encoder.values()) + student_tokenizer.all_special_ids) 
-                    - set([student_tokenizer.eos_token_id])),
-            device=student_qry_reps.device,
-            dtype=torch.long
-        )
-
-        num_student_text_qry_tokens = count_clean_text_tokens(student_qry_input, student_special_ids)
-        num_student_text_pos_tokens = count_clean_text_tokens(student_pos_input, student_special_ids)
-
-
-        selected_layer = self.args.num_layers
-
-        batch_size = student_qry_reps.size(0)
-        
-        vision_hidden_states = []
-        cur_idx_qry_img = 0
-        cur_idx_pos_img = 0
-        for i in range(batch_size):
-            # 1. QUERY Processing
-            if student_qry_image_features is not None:
-                if cur_idx_qry_img < len(student_qry_image_features):
-                    # --- Vision ---
-                    stu_feat = student_qry_image_features[cur_idx_qry_img]
-                    
-                    stu_text_hidden_state, vision_hidden_state = get_hidden_text_vision(
-                        student_qry_hidden_states[selected_layer][i],
-                        num_student_text_qry_tokens[i].item(),
-                        stu_feat.size(0),
-                        student_qry_input['attention_mask'][i]
-                    )
-                    vision_hidden_states.append(vision_hidden_state)
-                    cur_idx_qry_img += 1
-
-            # 2. POSITIVE Processing (Tương tự Query)
-            if student_pos_image_features is not None:
-                if cur_idx_pos_img < len(student_pos_image_features):
-                    # --- Vision ---
-                    stu_feat_pos = student_pos_image_features[cur_idx_pos_img]
-
-                    stu_text_hidden_state, vision_hidden_state = get_hidden_text_vision(
-                        student_pos_hidden_states[selected_layer][i],
-                        num_student_text_pos_tokens[i].item(),
-                        stu_feat_pos.size(0),
-                        student_pos_input['attention_mask'][i]
-                    )
-                    vision_hidden_states.append(vision_hidden_state)
-                    cur_idx_pos_img += 1
-
-        return vision_hidden_states
-
 
 
     def forward(self, model_wrapper, input_data):
