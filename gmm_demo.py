@@ -77,9 +77,10 @@ def main():
     # ---- PCA + GMM ----
     Z = PCA(args.pca_dim, random_state=args.seed).fit_transform(X)
     D, K = Z.shape[1], args.K
-    g1 = GaussianMixture(1, covariance_type=args.cov_type, reg_covar=1e-4, random_state=args.seed).fit(Z)
+    g1 = GaussianMixture(1, covariance_type=args.cov_type, reg_covar=1e-4, 
+                         random_state=args.seed, verbose=2, verbose_interval=1,).fit(Z)
     gk = GaussianMixture(K, covariance_type=args.cov_type, reg_covar=1e-4, n_init=5,
-                         random_state=args.seed).fit(Z)
+                         random_state=args.seed, verbose=2, verbose_interval=1,).fit(Z)
     print(f"K=1 : BIC={g1.bic(Z):.1f}  avg loglik={g1.score(Z):.3f}")
     print(f"K={K} : BIC={gk.bic(Z):.1f}  avg loglik={gk.score(Z):.3f}")
 
@@ -135,8 +136,9 @@ def main():
 
     fig.suptitle(f"N={len(Z)} | PCA {D}d | cov={args.cov_type} | subsets={args.subset_name} | side={args.side}")
     plt.tight_layout()
-    plt.savefig(args.out, dpi=150, bbox_inches="tight")
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
+    plt.savefig(args.out, dpi=150, bbox_inches="tight")
+    
     print("Saved", args.out)
 
 
