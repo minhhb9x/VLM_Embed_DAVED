@@ -172,7 +172,9 @@ def exact_participation_ratio(tokens, eps=1e-12, dtype=torch.float64):
     tr2 = (gram ** 2).sum()
     if tr2 <= eps:
         return torch.tensor(float("nan"), device=tokens.device)
-    return (tr1 ** 2 / tr2).float()
+    pr = (tr1 ** 2 / tr2).float()
+    pr = pr / min(n - 1, tokens.size(1))
+    return pr
 
 
 def compute_image_pr_all_layers(hidden_states, token_slice, num_image_tokens, idx):

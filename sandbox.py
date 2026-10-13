@@ -34,7 +34,7 @@ image = Image.open("example.jpg").convert("RGB")
 
 inputs = Qwen3_VL_process_fn(
     model_inputs={
-        "text": ["<|image_pad|> Represent this image", "<|image_pad|> Represent this image"],
+        "text": ["<|image_pad|> Represent this image", "Represent this image"],
         "images": [[image.resize((128, 128))], [image.resize((128, 64))]],
     },
     processor=processor
@@ -52,7 +52,8 @@ for i in range(input_ids.size(0)):
 
     valid_ids = ids[mask]
     valid_tokens = tokenizer.convert_ids_to_tokens(valid_ids.tolist())
-    decoded = tokenizer.decode(valid_ids, skip_special_tokens=False)
+    # decoded = tokenizer.decode(valid_ids, skip_special_tokens=False)
+    decoded = tokenizer.decode(ids, skip_special_tokens=False)
 
     print(f"\n{'=' * 80}")
     print(f"SAMPLE {i}")
@@ -70,6 +71,7 @@ for i in range(input_ids.size(0)):
 
     print("\nDECODED:")
     print(decoded)
+    print(attention_mask[i].bool())
 
 with torch.inference_mode():
     pooled_output, _, attention_matrix, output_hidden_states = model.encode_input(inputs)

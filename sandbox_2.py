@@ -1,10 +1,10 @@
 import torch
 
-x = torch.load("infer/rkd_meta_llavaov_cls_tiny/ImageNet-1K/query/00000000.pt")
-y = torch.load("infer/FastVLM-0.5B_base_b16_cls/ImageNet-1K/query/00000000.pt")
+x = torch.load("caching/Qwen3VL_8B_cls/ImageNet_1K/0/pos.pt")
+y = torch.load("caching/Qwen3VL_8B_cls/ImageNet_1K/0/qry.pt")
 
-print(x['hidden_shape'])
+print(x)
 
 print('===============================')
 
-print(y['hidden_shape'])
+print(y)
