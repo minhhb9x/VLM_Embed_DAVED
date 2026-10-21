@@ -21,7 +21,7 @@ SUBSETS=(
 # Dùng torchrun để khởi chạy
 # =========================================================================
 CUDA_VISIBLE_DEVICES=0 \
-torchrun --master_port=12345 --nproc_per_node=$NUM_GPUS_PER_NODE \
+torchrun --master_port=12347 --nproc_per_node=$NUM_GPUS_PER_NODE \
     $TRAIN_SCRIPT \
     --model_name raghavlite/B3_Qwen2_2B \
     --lora True \

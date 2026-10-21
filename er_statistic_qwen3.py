@@ -28,71 +28,94 @@ def load_hidden_layers_qwen3(
     pt_path: str,
     normalize: bool = False,
 ):
-    """
-    Extract Qwen3 image/text hidden states using saved token-position masks.
+    """Split the already-padding-free hidden states using their saved masks.
 
-    Image tokens may occupy one or multiple non-contiguous blocks. Text is
-    selected by text_token_mask, which is the complement of image_token_mask
-    over valid tokens. Therefore special tokens remain in text, and text spans
-    before, between, and after image blocks are concatenated in original order.
+    This works unchanged for original, image-first and image-last input order.
+    Image means <|image_pad|> positions only; text means every other valid
+    position, including chat/vision boundary special tokens.
+
+    Returns image [layers, image_tokens, dim], text [layers, text_tokens, dim],
+    last valid token [layers, dim], and metadata.
     """
-    obj = torch.load(pt_path, map_location="cpu")
-    hidden_state = obj["hidden_state"].float()
+    obj = torch.load(pt_path, map_location="cpu", weights_only=False)
+    hidden_state = obj["hidden_state"].detach().cpu().float()
 
     if hidden_state.ndim != 3:
         raise ValueError(
-            f"hidden_state in {pt_path} must have shape [layers, tokens, dim], "
+            f"hidden_state in {pt_path} must be [layers, valid_tokens, dim], "
             f"got {tuple(hidden_state.shape)}."
         )
 
-    num_tokens = hidden_state.size(1)
+    num_tokens = hidden_state.shape[1]
+    if num_tokens == 0:
+        raise ValueError(f"Empty token sequence in {pt_path}.")
+
+    # image_token_mask is aligned with the stored padding-free hidden_state.
+    # Do NOT slice based on number of text tokens: the image span can move.
     image_mask = _validate_token_mask(
         obj.get("image_token_mask"), "image_token_mask", num_tokens
     )
-    text_mask = _validate_token_mask(
-        obj.get("text_token_mask"), "text_token_mask", num_tokens
-    )
-
-    if torch.any(image_mask & text_mask):
-        raise ValueError(f"Image and text masks overlap in {pt_path}.")
-    if not torch.all(image_mask | text_mask):
-        raise ValueError(f"Image and text masks do not cover all tokens in {pt_path}.")
+    text_mask = ~image_mask
+    saved_text_mask = obj.get("text_token_mask")
+    if saved_text_mask is not None:
+        saved_text_mask = _validate_token_mask(
+            saved_text_mask, "text_token_mask", num_tokens
+        )
+        if not torch.equal(saved_text_mask, text_mask):
+            raise ValueError(
+                f"Saved text_token_mask is not the complement of image_token_mask "
+                f"in {pt_path}."
+            )
 
     num_image_tokens = int(image_mask.sum().item())
-    if num_image_tokens <= 0:
+    num_text_tokens = int(text_mask.sum().item())
+    if num_image_tokens == 0:
         return None, None, None, None
+    if num_text_tokens == 0:
+        raise ValueError(f"No non-image (text/special) tokens in {pt_path}.")
 
-    expected_image_tokens = int(obj.get("num_image_tokens", num_image_tokens))
-    expected_text_tokens = int(obj.get("num_text_tokens", text_mask.sum().item()))
-    if num_image_tokens != expected_image_tokens:
-        raise ValueError(
-            f"Image-mask count is {num_image_tokens}, but saved "
-            f"num_image_tokens is {expected_image_tokens} in {pt_path}."
-        )
-    if int(text_mask.sum().item()) != expected_text_tokens:
-        raise ValueError(
-            f"Text-mask count is {int(text_mask.sum().item())}, but saved "
-            f"num_text_tokens is {expected_text_tokens} in {pt_path}."
-        )
+    for field, actual in (
+        ("num_valid_tokens", num_tokens),
+        ("num_image_tokens", num_image_tokens),
+        ("num_text_tokens", num_text_tokens),
+    ):
+        if field in obj and int(obj[field]) != actual:
+            raise ValueError(
+                f"{field}={obj[field]} in {pt_path}, expected {actual} from masks."
+            )
+
+    # Optional cross-check of token IDs, if stored by a newer inference script.
+    # Older .pt files do not contain them, and still work with the masks.
+    valid_input_ids = obj.get("valid_input_ids", obj.get("input_ids"))
+    if valid_input_ids is not None:
+        valid_input_ids = torch.as_tensor(valid_input_ids).cpu().flatten()
+        if valid_input_ids.numel() != num_tokens:
+            raise ValueError(f"Input ID length does not match hidden states in {pt_path}.")
 
     image_hidden_layers = hidden_state[:, image_mask, :]
     text_hidden_layers = hidden_state[:, text_mask, :]
 
-    if text_hidden_layers.size(1) <= 0:
-        raise ValueError(f"No text tokens were extracted from {pt_path}.")
+    # The saved hidden states are already stripped of input padding in inference.
+    # Thus the last row is the true final valid token (typically <|endoftext|>),
+    # regardless of the location of the image span.
+    last_token_all_layers = hidden_state[:, -1, :].clone()
 
     if normalize:
         image_hidden_layers = F.normalize(image_hidden_layers, p=2, dim=-1)
         text_hidden_layers = F.normalize(text_hidden_layers, p=2, dim=-1)
 
-    last_token_all_layers = hidden_state[:, -1, :].clone()
     metadata = {
         "num_valid_tokens": num_tokens,
         "num_image_tokens": num_image_tokens,
-        "num_text_tokens": int(text_mask.sum().item()),
-        "num_special_text_tokens": int(obj.get("num_special_text_tokens", 0)),
-        "image_positions": image_mask.nonzero(as_tuple=False).squeeze(1),
-        "text_positions": text_mask.nonzero(as_tuple=False).squeeze(1),
+        "num_text_tokens": num_text_tokens,
+        # Only report this count when it was actually saved by inference.
+        "num_special_text_tokens": obj.get("num_special_text_tokens"),
+        "image_positions": image_mask.nonzero(as_tuple=True)[0],
+        "text_positions": text_mask.nonzero(as_tuple=True)[0],
+        "last_token_position": num_tokens - 1,
+        "last_token_id": (
+            int(valid_input_ids[-1].item()) if valid_input_ids is not None else None
+        ),
     }
     return (
         image_hidden_layers,
@@ -275,16 +298,20 @@ def main():
 
     total_image_tokens = sum(item["num_image_tokens"] for item in sample_metadata)
     total_text_tokens = sum(item["num_text_tokens"] for item in sample_metadata)
-    total_special_text_tokens = sum(
-        item["num_special_text_tokens"] for item in sample_metadata
+    # Older inference .pt files do not save this count. Do not misreport it as zero.
+    special_counts = [item["num_special_text_tokens"] for item in sample_metadata]
+    total_special_text_tokens = (
+        sum(int(value) for value in special_counts)
+        if all(value is not None for value in special_counts)
+        else "N/A (not stored in all .pt files)"
     )
 
     output_lines = [
         f"Requested samples: {args.num_samples}",
         f"Loaded files: {len(loaded_files)}",
         f"L2-normalized image/text tokens: {args.normalize}",
-        "Image selection: exact Qwen3 <|image_pad|> positions",
-        "Text selection: every valid non-image position",
+        "Image selection: saved image_token_mask (<|image_pad|> positions)",
+        "Text selection: complement of image_token_mask over valid tokens",
         "Text special tokens retained: True",
         "Text spans around/between image blocks concatenated: True",
         f"Total image tokens: {total_image_tokens}",
