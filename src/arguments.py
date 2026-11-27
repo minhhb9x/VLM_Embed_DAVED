@@ -40,7 +40,7 @@ class ModelArguments:
     teacher_normalize: bool = field(default=False, metadata={"help": "normalize query and passage representations for teacher"})
     projector_config_path: str = field(default=None, metadata={"help": "projector config path, if None, no projector will be used"})
     projector_path: str = field(default=None, metadata={"help": "projector model path, if None, no projector will be used"})
-    projector_lr: float = field(default=1e-4, metadata={"help": "projector learning rate"})
+    
     student_hidden_dim: int = field(default=896, metadata={"help": "student hidden dim"})
     teacher_hidden_dim: int = field(default=1536, metadata={"help": "teacher hidden dim"})
     load_pretrained_lora: bool = field(default=False, metadata={"help": "load pretrained lora model for student"})
@@ -109,6 +109,7 @@ class TrainingArguments(TrainingArguments):
     muon_lr: Optional[float] = field(default=None, metadata={"help": "Learning rate for Muon parameter groups. If None, uses torch.optim.Muon default."})
     muon_weight_decay: Optional[float] = field(default=None, metadata={"help": "Weight decay for Muon parameter groups. If None, uses torch.optim.Muon default."})
     adjust_lr_fn: Optional[str] = field(default="match_rms_adamw", metadata={"help": "Muon learning-rate adjustment function. Use original, match_rms_adamw, or None."})
+    projector_lr: float = field(default=1e-4, metadata={"help": "projector learning rate"})
     # args for TALAS
     num_projectors: int = field(default=0, metadata={"help": "Number of projectors for distillation"})
     num_self_kd_layers: int = field(default=0, metadata={"help": "Number of self-kd layers for distillation"})
@@ -141,6 +142,13 @@ class TrainingArguments(TrainingArguments):
     num_t: int = field(default=33, metadata={"help": "Number of t for characteristic function"})
     t_max: float = field(default=1.5, metadata={"help": "Maximum t for characteristic function"})
     Ds: int = field(default=896, metadata={"help": "Hidden dimension for student model"})
+    # Embedding-level distribution baselines. Existing flags use_distill_loss,
+    # use_sigreg_loss, kd_weight, and num_layers retain their DAVED meanings.
+    distribution_weight: Optional[float] = field(default=None, metadata={"help": "Distribution loss weight; None falls back to sigreg_weight"})
+    distribution_normalize: bool = field(default=False, metadata={"help": "L2-normalize common-space embeddings before distribution loss"})
+    distribution_num_slices: int = field(default=256, metadata={"help": "Number of random directions for direct sliced W2"})
+    mmd_bandwidth: float = field(default=0.0, metadata={"help": "RBF sigma; zero uses detached pooled-batch median distance"})
+    mmd_kernel_scales: str = field(default="0.5,1,2", metadata={"help": "Comma-separated multipliers of RBF sigma"})
 
 @dataclass
 class MTEBArguments:

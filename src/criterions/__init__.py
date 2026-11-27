@@ -36,8 +36,12 @@ from .span_attn_sigreg import SpanSigregCriterionWeighted
 from .pga import PGA
 from .qwen3_pga import Qwen3PGA
 from .vis_cosine_reg import VisCosineReg
+from .distribution_baselines import MMDKDLoss, CORALKDLoss, SWKDLoss
 
 criterion_list = {
+    "mmd_kd": MMDKDLoss,
+    "coral_kd": CORALKDLoss,
+    "sw_kd": SWKDLoss,
     "contrastive": ContrastiveLoss,
     "contrastive_2": ContrastiveLoss2,
     "contrastive_er": ContrastiveERLoss,
